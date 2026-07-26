@@ -1,7 +1,12 @@
 import os
 import numpy as np
 import torch
-from tensorboardX import SummaryWriter
+try:
+    from tensorboardX import SummaryWriter
+except ImportError:
+    # PyTorch installations commonly provide the same writer API even when
+    # the standalone tensorboardX package is absent.
+    from torch.utils.tensorboard import SummaryWriter
 from utils.shared_buffer import SharedReplayBuffer
 
 
