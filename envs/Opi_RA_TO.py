@@ -2,15 +2,8 @@ import numpy as np
 # from envs_202407.base import base
 from .common import common
 
-c1 = 10  # LoS/NLoS状态切换参数
-c2 = 0.6  # LoS/NLoS状态切换参数
-eta_los = 1.0  # LoS（视线）链路额外损耗，单位dB
-eta_nlos = 20  # NLoS（非视线）链路额外损耗，单位dB
-f_s = 2 * 10**9  # 载波频率，单位Hz
-c = 3 * 10**8  # 光速
-varpi0 = 1.58 * 10**(-13)  # 接收机噪声功率谱密度，通常单位W/Hz
 
-def PotentialGame(usv, uav, leo, base, A_old):
+def PotentialGame(usv, uav, leo, base, A_old, channel_snapshot):
 
     # 获取UD和SUAV的数量
     num_usv = base.num_usv  # todo M->num_usvs
@@ -83,7 +76,8 @@ def PotentialGame(usv, uav, leo, base, A_old):
                 # SECTION 选中UAV
                 elif selected_server_id > 0 and selected_server_id <= num_uav :  # NOTE 这里id是1-num_uav
                     # 提取SUAV信息
-                    selected_UAV = uav[int(selected_server_id) - 1]  # note 不一定需要-1
+                    selected_uav_index = int(selected_server_id) - 1
+                    selected_UAV = uav[selected_uav_index]  # note 不一定需要-1
                     # 提取UD参数
                     # gamma_T = PG_UDSet[k]['gamma_T']
                     # gamma_E = PG_UDSet[k]['gamma_E']
@@ -92,9 +86,11 @@ def PotentialGame(usv, uav, leo, base, A_old):
                     eta = usv[k]['task_resource']
 
                     # point 使用common类计算信道增益和传输速率
-                    gain = common_utils.calculate_usv_to_uav_channel_power_gain(usv[k]['position'],
-                                                                                      selected_UAV['position'])
-                    R = common_utils.calculate_rate_bps(usv[k]['power'], gain, selected_UAV['bandwith'])
+                    gain = channel_snapshot['gain'][k, selected_uav_index]
+                    kappa = channel_snapshot['kappa'][k, selected_uav_index]
+                    R = common_utils.calculate_rate_bps(
+                        usv[k]['power'], gain, selected_UAV['bandwith'], kappa
+                    )
 
                     # 计算Pc和Pb
                     Pc_temp[k, int(selected_server_id) - 1] = np.sqrt(eta * D / selected_UAV['resource']) # note 这要倒一下,看一下gamma
@@ -131,9 +127,11 @@ def PotentialGame(usv, uav, leo, base, A_old):
             for n in range(num_uav):
                 if offload_opt[m][n] == 1:
                     # point 使用common类计算信道增益和传输速率
-                    gain_m = common_utils.calculate_usv_to_uav_channel_power_gain(usv[m]['position'],
-                                                                                  uav[n]['position'])
-                    r_m = common_utils.calculate_rate_bps(usv[m]['power'], gain_m, uav[n]['bandwith'])
+                    gain_m = channel_snapshot['gain'][m, n]
+                    kappa_m = channel_snapshot['kappa'][m, n]
+                    r_m = common_utils.calculate_rate_bps(
+                        usv[m]['power'], gain_m, uav[n]['bandwith'], kappa_m
+                    )
 
                     Pc_temp[m, n] = np.sqrt(eta_usv * D_usv / uav[n]['resource'])
                     Pb_temp[m, n] = np.sqrt(D_usv / r_m)
@@ -157,4 +155,3 @@ def PotentialGame(usv, uav, leo, base, A_old):
     # note 返回卸载的无人机编号以及对应的pc，pb
     # print("usvs的卸载决策", A)
     return A
-

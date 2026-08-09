@@ -52,6 +52,10 @@ def init_usv(base):
         usv['task_resource'] = np.random.randint(base.task_resources_min, base.task_resources_max)
         usv['velocity'] = 1.0
         usv['direction'] = np.random.rand() * 2 * np.pi
+        usv['velocity_vector'] = usv['velocity'] * np.array(
+            [np.cos(usv['direction']), np.sin(usv['direction'])],
+            dtype=float,
+        )
         usv['trajectory'] = [np.copy(usv['position'])]
         usvs.append(usv)
     return usvs
@@ -81,6 +85,7 @@ def init_uav(base):
         uav['resource'] = base.uav_resource
         uav['high'] = base.H_UAV
         uav['number'] = uav_id
+        uav['velocity_vector'] = np.zeros(2, dtype=float)
         uav['trajectory'] = [np.copy(uav['position'])]
         uavs.append(uav)
     return uavs

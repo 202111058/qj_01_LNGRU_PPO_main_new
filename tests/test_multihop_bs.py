@@ -15,6 +15,8 @@ class MultihopTopologyTests(unittest.TestCase):
     def test_default_parameters_and_initial_backhaul(self):
         self.assertTrue(np.allclose(self.env.bs["position"], [500.0, 0.0]))
         self.assertEqual(self.env.base.bs_resource, 100 * self.env.base.GHz)
+        self.assertEqual(self.env.base.carrier_frequency_uav, 5e9)
+        self.assertEqual(self.env.base.uav_backhaul_carrier_frequency, 2e9)
         self.assertEqual(self.env.num_usvs, 20)
         self.assertEqual(self.env.obs_dim, 90)
 
@@ -27,6 +29,23 @@ class MultihopTopologyTests(unittest.TestCase):
         self.assertTrue(all(path is not None for path in paths))
         self.assertEqual(paths[0][-1], self.env.bs_node)
         self.assertGreaterEqual(len(paths[2]), 3)
+
+    def test_access_and_backhaul_carrier_frequencies_are_isolated(self):
+        args = (
+            np.array([100.0, 100.0]),
+            self.env.base.H_UAV,
+            np.array([400.0, 100.0]),
+            self.env.base.H_UAV,
+        )
+        _, baseline_rate = self.env._air_link(*args)
+
+        self.env.base.carrier_frequency_uav = 9e9
+        _, access_changed_rate = self.env._air_link(*args)
+        self.assertEqual(access_changed_rate, baseline_rate)
+
+        self.env.base.uav_backhaul_carrier_frequency = 3e9
+        _, backhaul_changed_rate = self.env._air_link(*args)
+        self.assertNotEqual(backhaul_changed_rate, baseline_rate)
 
     def test_no_direct_usv_bs_route(self):
         self.env.usvs[0]["position"] = np.array([500.0, 10.0])

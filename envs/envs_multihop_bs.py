@@ -12,7 +12,7 @@ from .common import common
 class MultihopBase(base):
     """Parameters used only by the multihop UAV-BS experiment."""
 
-    def __init__(self):
+    def __init__(self, overrides=None):
         super().__init__()
         # Keep the comparison experiment independent from the original
         # experiment's device-count sweep.  The multihop design and its
@@ -28,8 +28,12 @@ class MultihopBase(base):
         self.uav_relay_power = 1.0
         self.uav_access_bandwidth = 20 * self.MHz
         self.uav_backhaul_bandwidth = 20 * self.MHz
+        self.uav_backhaul_carrier_frequency = 2 * self.GHz
         self.potential_max_passes = 50
         self.potential_tolerance = 1e-9
+        if overrides:
+            for key, value in overrides.items():
+                setattr(self, key, value)
 
 
 def init_bs(config):
@@ -45,8 +49,8 @@ def init_bs(config):
 class EnvCore:
     """Core multihop environment; UAVs relay but never compute tasks."""
 
-    def __init__(self):
-        self.base = MultihopBase()
+    def __init__(self, overrides=None):
+        self.base = MultihopBase(overrides)
         self.common = common(self.base)
         self.num_usvs = self.base.num_usv
         self.num_uavs = self.base.num_uav
@@ -58,6 +62,7 @@ class EnvCore:
         self.usvs = []
         self.uavs = []
         self.bs = None
+        self.usv_uav_channel_snapshot = None
         self.offloading_decisions = np.zeros(self.num_usvs, dtype=int)
         self.current_step = 0
         self.last_potential_passes = 0
@@ -96,6 +101,11 @@ class EnvCore:
         self.usvs = init_usv(self.base)
         self.uavs = init_uav(self.base)
         self.bs = init_bs(self.base)
+        self.usv_uav_channel_snapshot = (
+            self.common.build_usv_to_uav_channel_snapshot(
+                self.usvs, self.uavs
+            )
+        )
         self.offloading_decisions.fill(0)
         self.system_time = 0.0
         self.total_energy = 0.0
@@ -204,7 +214,7 @@ class EnvCore:
             4
             * np.pi
             * distance
-            * self.base.carrier_frequency_uav
+            * self.base.uav_backhaul_carrier_frequency
             / self.base.light_speed
         )
         gain = 10 ** (-path_loss_db / 10)
@@ -278,7 +288,7 @@ class EnvCore:
             for uav_idx in range(self.num_uavs)
         ]
         routes = []
-        for usv in self.usvs:
+        for k, usv in enumerate(self.usvs):
             candidates = []
             for access_uav, path in enumerate(uav_paths):
                 if path is None:
@@ -293,12 +303,14 @@ class EnvCore:
                 access_distance = float(
                     np.hypot(horizontal, self.base.H_UAV)
                 )
-                gain = self.common.calculate_usv_to_uav_channel_power_gain(
-                    usv["position"], self.uavs[access_uav]["position"]
-                )
+                gain = self.usv_uav_channel_snapshot["gain"][k, access_uav]
+                kappa = self.usv_uav_channel_snapshot["kappa"][k, access_uav]
                 access_rate = float(
                     self.common.calculate_rate_bps(
-                        usv["power"], gain, self.base.uav_access_bandwidth
+                        usv["power"],
+                        gain,
+                        self.base.uav_access_bandwidth,
+                        kappa,
                     )
                 )
                 if access_rate <= 0:
@@ -677,6 +689,7 @@ class EnvCore:
         actions = np.clip(actions, -1.0, 1.0)
         fly_energies = np.zeros(self.num_uavs, dtype=float)
         for k, uav in enumerate(self.uavs):
+            old_position = uav["position"].copy()
             coverage_ratio = self._count_nearby_usvs(k) / self.num_usvs
             if self.task_completion_rate >= 90:
                 max_speed, action_scale = 6.0, 0.3
@@ -700,6 +713,9 @@ class EnvCore:
             uav["position"][1] = np.clip(
                 uav["position"][1], self.base.field_Y[0], self.base.field_Y[1]
             )
+            uav["velocity_vector"] = (
+                uav["position"] - old_position
+            ) / self.base.run_slot
             uav["trajectory"].append(uav["position"].copy())
             fly_energies[k] = self.common.get_uav_fly_energy(
                 np.linalg.norm(velocity)
@@ -713,6 +729,11 @@ class EnvCore:
         """Advance one multihop environment slot."""
 
         uav_fly_energies = self._move_uavs(actions)
+        self.usv_uav_channel_snapshot = (
+            self.common.build_usv_to_uav_channel_snapshot(
+                self.usvs, self.uavs
+            )
+        )
         routes = self._build_routes()
         self.offloading_decisions = self._run_potential_game(routes)
         evaluation = self._evaluate_profile(self.offloading_decisions, routes)

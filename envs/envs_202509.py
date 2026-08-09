@@ -33,6 +33,7 @@ class EnvCore(object):
         self.usvs = []
         self.uavs = []
         self.leo = None
+        self.usv_uav_channel_snapshot = None
 
         # 卸载决策向量，在reset时由博弈算法决定
         self.offloading_decisions = np.zeros(self.num_usvs, dtype=int)
@@ -61,13 +62,25 @@ class EnvCore(object):
         self.usvs = init_usv(self.base)
         self.uavs = init_uav(self.base)
         self.leo = init_leo(self.base)
+        self.usv_uav_channel_snapshot = (
+            self.common.build_usv_to_uav_channel_snapshot(
+                self.usvs, self.uavs
+            )
+        )
 
 
         # 2. 初始卸载决策 (这里可以调用您的博弈算法)
         # 示例：随机初始化决策
         for i in range(self.num_usvs):
             self.offloading_decisions[i] = self.usvs[i]['offload_decision']
-        self.offloading_decisions = PotentialGame(self.usvs, self.uavs, self.leo, self.base, self.offloading_decisions)
+        self.offloading_decisions = PotentialGame(
+            self.usvs,
+            self.uavs,
+            self.leo,
+            self.base,
+            self.offloading_decisions,
+            self.usv_uav_channel_snapshot,
+        )
 
         # 3. 返回初始的联合观测
         return self._get_observation()
@@ -265,6 +278,7 @@ class EnvCore(object):
         uav_fly_energies = np.zeros(self.num_uavs)
         for k, uav in enumerate(self.uavs):
             action = actions[k]  # shape: (2,)
+            old_position = uav['position'].copy()
 
             # 计算该UAV覆盖的USV数量
             covered_usvs = self._count_nearby_usvs(k)
@@ -353,6 +367,9 @@ class EnvCore(object):
             # 边界检查
             uav['position'][0] = np.clip(uav['position'][0], self.base.field_X[0], self.base.field_X[1])
             uav['position'][1] = np.clip(uav['position'][1], self.base.field_Y[0], self.base.field_Y[1])
+            uav['velocity_vector'] = (
+                uav['position'] - old_position
+            ) / self.base.run_slot
 
             # 记录uav轨迹
             uav['trajectory'].append(np.copy(uav['position']))
@@ -361,6 +378,19 @@ class EnvCore(object):
             velocity_magnitude = np.linalg.norm(velocity_vector)
             uav_fly_energies[k] = self.common.get_uav_fly_energy(velocity_magnitude)
 
+        self.usv_uav_channel_snapshot = (
+            self.common.build_usv_to_uav_channel_snapshot(
+                self.usvs, self.uavs
+            )
+        )
+        self.offloading_decisions = PotentialGame(
+            self.usvs,
+            self.uavs,
+            self.leo,
+            self.base,
+            self.offloading_decisions,
+            self.usv_uav_channel_snapshot,
+        )
 
         # --- 2. 根据卸载决策，计算每个任务的时延和能耗 ---
         task_total_times = np.zeros(self.num_usvs)
@@ -387,7 +417,14 @@ class EnvCore(object):
         for k in range(self.num_uavs):
             uav_idxs = np.where(self.offloading_decisions == k + 1)[0].astype(int)
             if len(uav_idxs) > 0:
-                pc_uav, pb_uav = self.common.get_uav_pc_pb(self.usvs, uav_idxs, self.uavs[k], self.base)
+                pc_uav, pb_uav = self.common.get_uav_pc_pb(
+                    self.usvs,
+                    uav_idxs,
+                    self.uavs[k],
+                    k,
+                    self.base,
+                    self.usv_uav_channel_snapshot,
+                )
                 pc += pc_uav
                 pb += pb_uav
 
@@ -417,8 +454,14 @@ class EnvCore(object):
                 uav = self.uavs[uav_id]
 
                 # 通信过程
-                channel_gain = self.common.calculate_usv_to_uav_channel_power_gain(usv['position'], uav['position'])
-                rate = self.common.calculate_rate_bps(usv['power'], channel_gain, self.base.uav_bandwith)
+                channel_gain = self.usv_uav_channel_snapshot['gain'][i, uav_id]
+                kappa = self.usv_uav_channel_snapshot['kappa'][i, uav_id]
+                rate = self.common.calculate_rate_bps(
+                    usv['power'],
+                    channel_gain,
+                    self.base.uav_bandwith,
+                    kappa,
+                )
                 allocated_rate = rate * pb[i]  # point 使用分配的带宽资源
                 trans_time = self.common.calculate_transmission_time(task_size_bits, allocated_rate)
                 trans_energy = self.common.calculate_transmission_energy(usv['power'], trans_time)
@@ -487,8 +530,6 @@ class EnvCore(object):
         for usv in self.usvs:
             usv['task_size'] = np.random.randint(self.base.task_size_min, self.base.task_size_max)
             usv['task_resource'] = np.random.randint(self.base.task_resources_min, self.base.task_resources_max)
-
-        self.offloading_decisions = PotentialGame(self.usvs, self.uavs, self.leo, self.base, self.offloading_decisions)  # TODO 不知道能不能这么赋值
 
         # print(f"step次数: {self.current_step}, 卸载决策: {self.offloading_decisions}")
 
