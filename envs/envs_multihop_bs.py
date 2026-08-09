@@ -12,7 +12,7 @@ from .common import common
 class MultihopBase(base):
     """Parameters used only by the multihop UAV-BS experiment."""
 
-    def __init__(self):
+    def __init__(self, overrides=None):
         super().__init__()
         # Keep the comparison experiment independent from the original
         # experiment's device-count sweep.  The multihop design and its
@@ -30,6 +30,9 @@ class MultihopBase(base):
         self.uav_backhaul_bandwidth = 20 * self.MHz
         self.potential_max_passes = 50
         self.potential_tolerance = 1e-9
+        if overrides:
+            for key, value in overrides.items():
+                setattr(self, key, value)
 
 
 def init_bs(config):
@@ -45,8 +48,8 @@ def init_bs(config):
 class EnvCore:
     """Core multihop environment; UAVs relay but never compute tasks."""
 
-    def __init__(self):
-        self.base = MultihopBase()
+    def __init__(self, overrides=None):
+        self.base = MultihopBase(overrides)
         self.common = common(self.base)
         self.num_usvs = self.base.num_usv
         self.num_uavs = self.base.num_uav
