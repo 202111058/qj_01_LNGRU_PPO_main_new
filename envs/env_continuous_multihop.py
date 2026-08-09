@@ -10,8 +10,8 @@ from envs.envs_multihop_bs import EnvCore
 class ContinuousMultihopEnv:
     """Expose the multihop core through the existing MAPPO environment API."""
 
-    def __init__(self):
-        self.env = EnvCore()
+    def __init__(self, env_overrides=None):
+        self.env = EnvCore(overrides=env_overrides)
         self.num_agent = self.env.num_uavs
         self.signal_obs_dim = self.env.obs_dim
         self.signal_action_dim = self.env.action_dim

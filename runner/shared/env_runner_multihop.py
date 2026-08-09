@@ -33,7 +33,8 @@ class EnvRunner(ExistingEnvRunner):
         super().__init__(config)
         # The parent runner reads the original experiment's base parameters.
         # Replace them for trajectory labels and multihop-only diagnostics.
-        self.base = MultihopBase()
+        overrides = getattr(self.all_args, "env_overrides", None)
+        self.base = MultihopBase(overrides)
         self.num_usv = self.base.num_usv
 
     def run(self):
@@ -160,8 +161,21 @@ class EnvRunner(ExistingEnvRunner):
                     f"{metrics['max_hop_count']:.2f}"
                 )
                 print(
-                    "  Avg. UAV Relay Energy: "
+                    f"  Avg. USV Energy: {metrics['avg_usv_energy']:.3f} J"
+                )
+                print(
+                    f"  Avg. UAV Energy: {metrics['avg_uav_energy']:.3f} J"
+                )
+                print(
+                    "    - Avg. UAV Fly Energy: "
+                    f"{metrics['avg_uav_fly_energy']:.3f} J"
+                )
+                print(
+                    "    - Avg. UAV Relay Energy: "
                     f"{metrics['avg_uav_relay_energy']:.3f} J"
+                )
+                print(
+                    f"  Avg. Total Energy: {metrics['total_energy']:.3f} J"
                 )
                 print("-----------------------------------------")
                 self.log_train(metrics, total_num_steps)

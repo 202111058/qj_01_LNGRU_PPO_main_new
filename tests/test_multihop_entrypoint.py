@@ -89,6 +89,11 @@ class MultihopEntrypointTests(unittest.TestCase):
         parser = get_config()
         valid = parse_args([], parser)
         _validate_fixed_args(valid)
+        self.assertFalse(valid.use_linear_lr_decay)
+        with_decay = parse_args(
+            ["--use_linear_lr_decay"], get_config()
+        )
+        self.assertTrue(with_decay.use_linear_lr_decay)
         invalid_cases = (
             ["--env_name", "MyEnv"],
             ["--episode_length", "30"],
@@ -118,13 +123,11 @@ class MultihopEntrypointTests(unittest.TestCase):
         source = (ROOT / "train" / "train_multihop.py").read_text()
         ast.parse(source)
         self.assertIn("ContinuousMultihopEnv", source)
-        self.assertIn(
-            'parser.set_defaults(env_name="MultihopUAVBS")', source
-        )
+        self.assertIn('env_name="MultihopUAVBS"', source)
+        self.assertIn("use_linear_lr_decay=False", source)
         self.assertIn("env_runner_multihop", source)
         self.assertNotIn("ContinuousActionEnv", source)
 
 
 if __name__ == "__main__":
     unittest.main()
-
