@@ -1,4 +1,9 @@
-"""Independent training entry point for the multihop UAV-BS experiment."""
+"""Parametrized training entry point for multihop UAV-BS comparison experiments.
+
+Supports command-line overrides for num_usv, task_size, and uav_resource
+so that a single script can drive all comparison sweeps without duplicating
+train/env files.
+"""
 
 import socket
 import sys
@@ -7,7 +12,6 @@ from pathlib import Path
 import numpy as np
 import setproctitle
 import torch
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -18,16 +22,45 @@ from envs.env_wrappers import DummyVecEnv
 from envs.envs_multihop_bs import MultihopBase
 
 
-ENV_BASE = MultihopBase()
+def _build_env_overrides(all_args):
+    """Construct the overrides dict from parsed command-line arguments."""
+    MB = 8 * 1024 * 1024
+    GHz = 1_000_000_000
+    overrides = {}
+    if all_args.num_usv is not None:
+        overrides["num_usv"] = all_args.num_usv
+    if all_args.task_size_max is not None:
+        overrides["task_size_max"] = all_args.task_size_max * MB
+    if all_args.task_size_min is not None:
+        overrides["task_size_min"] = all_args.task_size_min * MB
+    if all_args.uav_resource is not None:
+        overrides["uav_resource"] = all_args.uav_resource * GHz
+    return overrides or None
 
 
-def make_train_env(all_args):
+def _auto_experiment_name(all_args, overrides):
+    """Generate a descriptive experiment name from the sweep parameters."""
+    if all_args.experiment_name != "check":
+        return all_args.experiment_name
+    MB = 8 * 1024 * 1024
+    GHz = 1_000_000_000
+    base = MultihopBase(overrides)
+    usv = base.num_usv
+    task = (
+        all_args.task_size_label
+        if all_args.task_size_label is not None
+        else base.task_size_max / MB
+    )
+    res = int(base.uav_resource / GHz)
+    return f"usv{usv}_task{task:.1f}M_res{res}G_seed{all_args.seed}"
+
+
+def make_train_env(all_args, env_overrides):
     def get_env_fn(rank):
         def init_env():
-            env = ContinuousMultihopEnv()
+            env = ContinuousMultihopEnv(env_overrides=env_overrides)
             env.seed(all_args.seed + rank * 1000)
             return env
-
         return init_env
 
     return DummyVecEnv(
@@ -35,13 +68,12 @@ def make_train_env(all_args):
     )
 
 
-def make_eval_env(all_args):
+def make_eval_env(all_args, env_overrides):
     def get_env_fn(rank):
         def init_env():
-            env = ContinuousMultihopEnv()
+            env = ContinuousMultihopEnv(env_overrides=env_overrides)
             env.seed(all_args.seed + 500_000 + rank * 1000)
             return env
-
         return init_env
 
     return DummyVecEnv(
@@ -52,13 +84,16 @@ def make_eval_env(all_args):
 def parse_args(args, parser):
     parser.add_argument("--scenario_name", type=str, default="MyEnv")
     parser.add_argument("--num_landmarks", type=int, default=3)
-    parser.add_argument(
-        "--num_agents", type=int, default=ENV_BASE.num_uav
-    )
-    # A 60k-step comparison contains only 200 PPO updates.  Decaying the
-    # learning rate to almost zero within that short budget freezes learning
-    # near the end, so the multihop entry uses a constant rate by default.
-    # Passing --use_linear_lr_decay explicitly restores the original schedule.
+    parser.add_argument("--num_usv", type=int, default=None,
+                        help="Override USV count (default: use MultihopBase default)")
+    parser.add_argument("--task_size_max", type=float, default=None,
+                        help="Override task_size_max in MB (e.g. 1.0)")
+    parser.add_argument("--task_size_min", type=float, default=None,
+                        help="Override task_size_min in MB (e.g. 0.5)")
+    parser.add_argument("--task_size_label", type=float, default=None,
+                        help="Task-size label used in the experiment name")
+    parser.add_argument("--uav_resource", type=float, default=None,
+                        help="Override UAV resource in GHz (e.g. 25)")
     parser.set_defaults(
         env_name="MultihopUAVBS",
         use_linear_lr_decay=False,
@@ -66,32 +101,19 @@ def parse_args(args, parser):
     return parser.parse_known_args(args)[0]
 
 
-def _validate_fixed_args(all_args):
-    """Protect the experiment namespace and core/wrapper shape invariants."""
-
-    expected = {
-        "env_name": "MultihopUAVBS",
-        "num_agents": ENV_BASE.num_uav,
-        "episode_length": ENV_BASE.episode_length,
-        "share_policy": True,
-    }
-    invalid = {
-        name: (getattr(all_args, name), value)
-        for name, value in expected.items()
-        if getattr(all_args, name) != value
-    }
-    if invalid:
-        detail = ", ".join(
-            f"{name}={actual!r} (required {required!r})"
-            for name, (actual, required) in invalid.items()
-        )
-        raise ValueError(f"Invalid fixed multihop arguments: {detail}")
-
-
 def main(args):
     parser = get_config()
     all_args = parse_args(args, parser)
-    _validate_fixed_args(all_args)
+
+    env_overrides = _build_env_overrides(all_args)
+    all_args.env_overrides = env_overrides
+
+    base = MultihopBase(env_overrides)
+    all_args.num_agents = base.num_uav
+    all_args.episode_length = base.episode_length
+    all_args.share_policy = True
+
+    all_args.experiment_name = _auto_experiment_name(all_args, env_overrides)
 
     if all_args.algorithm_name == "rmappo":
         assert (
@@ -138,17 +160,19 @@ def main(args):
         f"{all_args.experiment_name}@{all_args.user_name}"
     )
     print(
-        "Starting multihop UAV-BS experiment on "
+        f"Starting multihop sweep experiment on "
         f"{socket.gethostname()} in {run_dir} "
-        f"({ENV_BASE.num_uav} UAVs, {ENV_BASE.num_usv} USVs)"
+        f"({base.num_uav} UAVs, {base.num_usv} USVs)"
     )
+    if env_overrides:
+        print(f"  Environment overrides: {env_overrides}")
 
     torch.manual_seed(all_args.seed)
     torch.cuda.manual_seed_all(all_args.seed)
     np.random.seed(all_args.seed)
 
-    envs = make_train_env(all_args)
-    eval_envs = make_eval_env(all_args) if all_args.use_eval else None
+    envs = make_train_env(all_args, env_overrides)
+    eval_envs = make_eval_env(all_args, env_overrides) if all_args.use_eval else None
     config = {
         "all_args": all_args,
         "envs": envs,
