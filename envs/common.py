@@ -19,7 +19,9 @@ class common:
     # 1. 通信模型 (Communication Models)
     # ==============================================================================
 
-    def calculate_usv_to_uav_channel_power_gain(self, usv_pos, uav_pos):
+    def calculate_usv_to_uav_channel_power_gain(
+        self, usv_pos, uav_pos, rician_power=1.0
+    ):
         """
         计算USV到UAV的信道功率增益（线性值）。
         该模型是一个概率性视距（Probabilistic LoS）模型，能真实反映空对海信道特性。
@@ -47,7 +49,7 @@ class common:
         path_loss_db = prob_los * (fsl_db + self.base.zeta_L) + (1 - prob_los) * (fsl_db + self.base.zeta_NL)
 
         # 将dB单位的路径损耗转换为线性的信道功率增益 (Gain = 1 / Loss)
-        channel_power_gain = 10 ** (-path_loss_db / 10)
+        large_scale_gain = 10 ** (-path_loss_db / 10)
 
         # # 强制设为100% LoS来测试最好情况下的损耗
         # path_loss_db = fsl_db + self.base.zeta_L
@@ -55,7 +57,94 @@ class common:
         # # 将dB单位的路径损耗转换为线性的信道功率增益 (Gain = 1 / Loss)
         # channel_power_gain = 10 ** (-path_loss_db / 10)
 
-        return channel_power_gain
+        return float(large_scale_gain * rician_power)
+
+    def calculate_usv_to_uav_rician_power(self, distance_3d):
+        """Return normalized Rician small-scale power for one access link."""
+        K = self.base.rician_K_factor_uav
+        xi = (np.random.randn() + 1j * np.random.randn()) / np.sqrt(2.0)
+        phase = np.exp(
+            -1j
+            * 2.0
+            * np.pi
+            * distance_3d
+            * self.base.carrier_frequency_uav
+            / self.base.light_speed
+        )
+        h = (
+            np.sqrt(K / (K + 1.0)) * phase
+            + np.sqrt(1.0 / (K + 1.0)) * xi
+        )
+        return float(np.abs(h) ** 2)
+
+    def calculate_usv_to_uav_doppler(self, usv, uav):
+        """Return full Doppler, residual Doppler, and OFDM loss coefficient."""
+        horizontal_delta = np.asarray(
+            usv['position'], dtype=float
+        ) - np.asarray(uav['position'], dtype=float)
+        distance_3d = float(
+            np.sqrt(
+                np.dot(horizontal_delta, horizontal_delta)
+                + self.base.H_UAV ** 2
+            )
+        )
+        relative_velocity = (
+            np.asarray(usv['velocity_vector'], dtype=float)
+            - np.asarray(uav['velocity_vector'], dtype=float)
+        )
+        radial_velocity = float(
+            np.dot(relative_velocity, horizontal_delta)
+            / max(distance_3d, 1e-12)
+        )
+        doppler_hz = (
+            radial_velocity
+            * self.base.carrier_frequency_uav
+            / self.base.light_speed
+        )
+        residual_hz = self.base.doppler_residual_ratio * doppler_hz
+        kappa = float(
+            np.sinc(
+                residual_hz * self.base.ofdm_symbol_duration
+            ) ** 2
+        )
+        return doppler_hz, residual_hz, float(np.clip(kappa, 0.0, 1.0))
+
+    def build_usv_to_uav_channel_snapshot(self, usvs, uavs):
+        """Sample every USV-UAV access link exactly once for the slot."""
+        shape = (len(usvs), len(uavs))
+        gains = np.zeros(shape, dtype=float)
+        rician_powers = np.zeros(shape, dtype=float)
+        doppler_hz = np.zeros(shape, dtype=float)
+        residual_hz = np.zeros(shape, dtype=float)
+        kappas = np.ones(shape, dtype=float)
+
+        for k, usv in enumerate(usvs):
+            for n, uav in enumerate(uavs):
+                horizontal = float(
+                    np.linalg.norm(usv['position'] - uav['position'])
+                )
+                distance_3d = float(np.hypot(horizontal, self.base.H_UAV))
+                rician_power = self.calculate_usv_to_uav_rician_power(
+                    distance_3d
+                )
+                fd, residual, kappa = self.calculate_usv_to_uav_doppler(
+                    usv, uav
+                )
+                gains[k, n] = self.calculate_usv_to_uav_channel_power_gain(
+                    usv['position'], uav['position'], rician_power
+                )
+                rician_powers[k, n] = rician_power
+                doppler_hz[k, n] = fd
+                residual_hz[k, n] = residual
+                kappas[k, n] = kappa
+
+        return {
+            'gain': gains,
+            'rician_power': rician_powers,
+            'doppler_hz': doppler_hz,
+            'residual_doppler_hz': residual_hz,
+            'kappa': kappas,
+        }
 
     def calculate_usv_to_satellite_channel_power_gain(self, usv_pos):
         """
@@ -105,7 +194,13 @@ class common:
         total_channel_power_gain = large_scale_gain_linear * small_scale_gain_linear* rx_gain_linear
         return total_channel_power_gain
 
-    def calculate_rate_bps(self, tx_power_w, channel_power_gain, bandwidth_hz):
+    def calculate_rate_bps(
+        self,
+        tx_power_w,
+        channel_power_gain,
+        bandwidth_hz,
+        doppler_coefficient=1.0,
+    ):
         """
         通用的香农公式计算速率 (返回bps)。
         这里的channel_power_gain已经包含了所有增益和损耗。
@@ -117,11 +212,12 @@ class common:
         # 接收功率 = 发射功率 * 信道功率增益 (已省略天线增益)
         rx_power_w = tx_power_w * channel_power_gain
 
-        snr_linear = rx_power_w / noise_power_w
-        if snr_linear < 0: print("SNR计算错误")
-
-        rate = bandwidth_hz * np.log2(1 + snr_linear)
-        return rate
+        kappa = float(np.clip(doppler_coefficient, 0.0, 1.0))
+        denominator = noise_power_w + rx_power_w * (1.0 - kappa)
+        if denominator <= 0.0:
+            return 0.0
+        effective_sinr = rx_power_w * kappa / denominator
+        return float(bandwidth_hz * np.log2(1.0 + effective_sinr))
 
     # ==============================================================================
     # 2. 时间与能耗计算 (Time & Energy Models)
@@ -175,6 +271,7 @@ class common:
         sigma_d = 2
 
         for usv in usv_list:
+            old_position = usv['position'].copy()
             rand_v = sigma_v * np.random.randn()
             rand_d = sigma_d * np.random.randn()
             usv['velocity'] = alpha * usv['velocity'] + (1 - alpha) * avg_v + np.sqrt(1 - alpha ** 2) * rand_v
@@ -192,6 +289,9 @@ class common:
             if not (self.base.field_Y[0] < usv['position'][1] < self.base.field_Y[1]):
                 usv['direction'] = -usv['direction']
                 usv['position'][1] = np.clip(usv['position'][1], self.base.field_Y[0], self.base.field_Y[1])
+            usv['velocity_vector'] = (
+                usv['position'] - old_position
+            ) / self.base.run_slot
             usv['trajectory'].append(np.copy(usv['position']))
 
     # 在common.py中添加以下函数
@@ -237,7 +337,9 @@ class common:
 
         return pc_temp, pb_temp
 
-    def get_uav_pc_pb(self, usvs, idxs, uav, base):
+    def get_uav_pc_pb(
+        self, usvs, idxs, uav, uav_index, base, channel_snapshot
+    ):
         """
         计算卸载到UAV的USV的计算和带宽资源分配系数。
 
@@ -260,8 +362,11 @@ class common:
             eta = usvs[k]['task_resource']
 
             # 计算传输速率
-            gain = self.calculate_usv_to_uav_channel_power_gain(usvs[k]['position'], uav['position'])
-            r = self.calculate_rate_bps(usvs[k]['power'], gain, uav['bandwith'])
+            gain = channel_snapshot['gain'][k, uav_index]
+            kappa = channel_snapshot['kappa'][k, uav_index]
+            r = self.calculate_rate_bps(
+                usvs[k]['power'], gain, uav['bandwith'], kappa
+            )
 
             # 计算资源分配系数
             pc_temp[k] = np.sqrt(eta * D / uav['resource'])

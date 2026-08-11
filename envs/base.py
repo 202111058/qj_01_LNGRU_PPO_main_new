@@ -9,7 +9,7 @@ class base(object):
         # 1. 智能体与设备数量
         # =====================================================================
         self.num_uav = 4
-        self.num_usv = 40
+        self.num_usv = 20
         self.leo_num = 1
 
         # =====================================================================
@@ -82,7 +82,16 @@ class base(object):
         self.zeta_NL = 34   # NLoS条件下的额外损耗 (dB)
         self.alpha_uav_path_loss = 5.0188  # 环境参数a
         self.beta_uav_path_loss = 0.3511   # 环境参数b
-        self.carrier_frequency_uav = 2 * self.GHz  # USV到UAV的载波频率
+        # USV-UAV access channel parameters used by Eqs. (4)-(11).
+        self.carrier_frequency_uav = 5 * self.GHz
+        self.rician_K_factor_uav_db = 15.0
+        self.rician_K_factor_uav = 10 ** (
+            self.rician_K_factor_uav_db / 10.0
+        )
+        self.subcarrier_spacing = 30 * self.kHz
+        self.ofdm_symbol_duration = 1.0 / self.subcarrier_spacing
+        self.doppler_compensation_ratio = 0.9
+        self.doppler_residual_ratio = 1.0 - self.doppler_compensation_ratio
 
         # 8.3 USV-to-Satellite 路径损耗模型参数
         # 来源: "Performance Analysis of End-to-End LEO Satellite-Aided..."
